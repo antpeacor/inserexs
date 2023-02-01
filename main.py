@@ -1,5 +1,5 @@
 """
-BSD 3-Clause License
+BSD 3-Clause License.
 
 Copyright (c) 2022 CNRS - Université de Strasbourg.
 All rights reserved.
@@ -54,7 +54,9 @@ from pathlib import Path
 import promptlib  # v3.0.20
 import threading  # v4.1.0
 import matplotlib.pyplot as plt  # v.3.5.1
-import seaborn as sns #v0.12.1
+import seaborn as sns # v0.12.1
+import CifFile # v4.4.5
+import pyxtal # v0.5.5
 
 # Own modules, to be placed in same folder:
 import intensity_module as im
@@ -89,21 +91,17 @@ class Screen (Ui_myWindow_base, Ui_myWindow_form):
         prompter = promptlib.Files()  # calls for directory
         file_cif = prompter.file()  # calles for file
 
+        crystal.name = os.path.basename(file_cif[:-4])  # for file's name
+
         if not file_cif.endswith('.cif'):
-            raise TypeError("That is not a .cif file")
+            raise TypeError("That is not a .cif file.")
 
         # write file name in correct line
         self.cifnameLine.setText(os.path.basename(file_cif))
 
-        # Open and reads .cif file
-        f = open(file_cif, 'r')
-
-        crystal.name = os.path.basename(file_cif[:-4])  # for file's name
-        CIF = f.readlines()
-        f.close()
-
         # load crystal info
-        get_crystal_info(crystal, CIF)
+        cf_object = CifFile.ReadCif(file_cif)
+        get_crystal_info(crystal, cf_object)
 
         # Crystal variables:
         self.line_comb = ((self.aLine, crystal.a),
@@ -134,6 +132,8 @@ class Screen (Ui_myWindow_base, Ui_myWindow_form):
                     item.setTextAlignment(QtCore.Qt.AlignHCenter)
                     self.edgeTable.setItem(row, column, item)
 
+        # the refinement buttons are created:
+        self.make_refinement_buttons()
 
     def update_values(self):
         """Call to update values."""
@@ -146,6 +146,9 @@ class Screen (Ui_myWindow_base, Ui_myWindow_form):
 
     def fetch_reflections(self):
         """Call to fetch the reflections."""
+        # Checks if anything is checked in the edge list
+        self.refinement_checks()
+
         # to consider forbidden reflections or not
         crystal.forbidden = self.forbiddenCheckbox.isChecked()
 
@@ -169,7 +172,6 @@ class Screen (Ui_myWindow_base, Ui_myWindow_form):
                                          (str(reflection[1])))
             row += 1
 
-        self.make_refinement_buttons()
 
     def make_refinement_buttons(self):
         """Call to make refinement buttons."""
@@ -204,17 +206,19 @@ class Screen (Ui_myWindow_base, Ui_myWindow_form):
 
     def refinement_checks(self):
         """Call to check the buttons which are checked."""
-        crystal.refinement_checked_list = [i for i, button in
-                                           enumerate(self.groupButton.buttons())
-                                           if button.isChecked()]
-        if len(crystal.refinement_checked_list) == 0:
-            raise ValueError("No items have been chosen.")
-
         crystal.edge_checked_list = [i for i, button in
                                      enumerate(self.edgeButtons.buttons())
                                      if button.isChecked()]
-        if len(crystal.edge_checked_list) == 0:
-            raise ValueError("No edges have been chosen.")
+
+        if hasattr(crystal, 'reflections'):
+            crystal.refinement_checked_list = [i for i, button in
+                                               enumerate(self.groupButton.buttons())
+                                               if button.isChecked()]
+            if len(crystal.refinement_checked_list) == 0:
+                raise ValueError("No items have been chosen.")
+
+            if len(crystal.edge_checked_list) == 0:
+                raise ValueError("No edges have been chosen.")
 
     def fetch_sensitivity(self):
         """Call to fetch the sensitivity."""
@@ -237,10 +241,10 @@ class Screen (Ui_myWindow_base, Ui_myWindow_form):
         crystal.percent = float(self.percentLine.text())
 
         # to see if parameters should be coupled:
-        if self.coupleCheckbox.isChecked():
-            crystal.coupled = True
-        else:
-            crystal.coupled = False
+        crystal.coupled = self.coupleCheckbox.isChecked()
+
+        # number of simulations to perform:
+        crystal.nsim = float(self.nsimLine.text())
 
         self.refinement_checks()  # checks the checked boxes
         self.fetch_sensitivity()  # launches for sensitivity calculation
@@ -258,7 +262,11 @@ class Screen (Ui_myWindow_base, Ui_myWindow_form):
 
     def representation(self):
         """Call to do final plot."""
+        # Check if absolute sensitivity or normalised
+        crystal.normalised = self.normalisedCheckbox.isChecked()
+
         self.graphic = MPLplot()
+
         self.graphicLayout.addWidget(self.graphic)
 
 
@@ -276,10 +284,17 @@ class Crystal:
         """Call to add an extra element."""
         self.atom_list.append(element)
 
-    def add_sym(self, element):
-        """Call to add an symmetry element."""
-        self.operation_list.append(element)
-
+    def check_hex(self):
+        """Check if the Miller indices should be written as hkil."""
+        if self.sgnumber < 143 or self.sgnumber > 194:
+            return False
+        if self.sgnumber < 168 and hasattr(self, 'setting'):
+            if 'h' in self.setting.lower():
+                return True
+            else:
+                return False
+        if self.sgnumber >= 168:
+            return True
 
 class myThread(threading.Thread):
     """Create a thread object."""
@@ -317,7 +332,10 @@ class MPLplot(FC):
         super().__init__(self.fig)
 
         x = crystal.results['Intensities']
-        y = crystal.results['Sensitivities']
+        if crystal.normalised:
+            y = crystal.results['Sensitivities (I norm)']
+        else:
+            y = crystal.results['Sensitivities']
 
         # list containing the occupied coordinates. If a new reflection is too
         occ_coordinates = []
@@ -326,7 +344,11 @@ class MPLplot(FC):
 
         for i in range(len(crystal.results['Reflections'])):
             x_text = crystal.results['Intensities'][i]
-            y_text = crystal.results['Sensitivities'][i]
+
+            if crystal.normalised:
+                y_text = crystal.results['Sensitivities (I norm)'][i]
+            else:
+                y_text = crystal.results['Sensitivities'][i]
 
             x_text = self.coordinate_comeback(x_text)
             y_text = self.coordinate_comeback(y_text)
@@ -335,7 +357,7 @@ class MPLplot(FC):
 
             # close to an existing one, the label is not shown
             for coord in occ_coordinates:
-                if math.sqrt((x_text - coord[0])**2 + (y_text - coord[1])**2) < 10:
+                if math.sqrt((x_text - coord[0])**2 + (y_text - coord[1])**2) < 20:
                     break
             else:
                 self.ax.text(x_text, y_text, str(crystal.results['Reflections'][i]),
@@ -348,7 +370,11 @@ class MPLplot(FC):
         sns.set_style('ticks')
 
         self.ax.set_xlabel('Intensity (%)', fontsize=18)
-        self.ax.set_ylabel('Sensitivity (%)', fontsize=18)
+
+        if crystal.normalised:
+            self.ax.set_ylabel('Sensitivity (norm.) (%)', fontsize=18)
+        else:
+            self.ax.set_ylabel('Sensitivity (%)', fontsize=18)
 
         plt.subplots_adjust(left=0.2, bottom=0.2)
         self.fig.text(0,0,'.', color='white') # positioning issue
@@ -362,75 +388,76 @@ class MPLplot(FC):
         else:
             return coord - 9
 
+def error_strip(a):
+    """Check if a parameter has an error in it and strip it."""
+    if '(' in str(a):
+        return a[:-3]
+    else:
+        return a
+
 
 def get_crystal_info(obj, CIF):
-    """We give crystal object, sym op object and CIF file."""
-    counter = 0
+    """
+    We give crystal object, sym op object and CIF object.
 
-    # CIF list lines
-    for line in CIF:
-        if line.startswith('_cell_length_a'):
-            obj.a = float(line[15:].replace('\n', '').replace(' ', ''))
-        elif line.startswith('_cell_length_b'):
-            obj.b = float(line[15:].replace('\n', '').replace(' ', ''))
-        elif line.startswith('_cell_length_c'):
-            obj.c = float(line[15:].replace('\n', '').replace(' ', ''))
-        elif line.startswith('_cell_angle_alpha'):
-            obj.alpha = float(line[18:].replace('\n', '').replace(' ', ''))
-        elif line.startswith('_cell_angle_beta'):
-            obj.beta = float(line[17:].replace('\n', '').replace(' ', ''))
-        elif line.startswith('_cell_angle_gamma'):
-            obj.gamma = float(line[18:].replace('\n', '').replace(' ', ''))
-        elif line.startswith('_symmetry_space_group_name_H-M'):
-            if ":" in line:
-                sg_info = line[30:].replace("'", '').replace(' ', '').split(':')
-                obj.spacegroup, obj.setting = sg_info[0], sg_info[1]
-            else:
-                sg_info = line[30:].replace("'", '').replace(' ', '')
-                obj.spacegroup = sg_info
-            obj.spacegroup = obj.spacegroup[0].upper() + obj.spacegroup[1:].lower()
+    It is conceived for cif files with a single data block
+    """
+    # Only loads the first data block
+    CIFdata = CIF[CIF.keys()[0]]
 
-        elif line.startswith('_space_group_symop_operation_xyz') or line.startswith('_symmetry_equiv_pos_as_xyz'):
-            counter_0 = counter
+    # Loads each parameter
+    obj.a = float(error_strip(CIFdata['_cell_length_a']))
+    obj.b = float(error_strip(CIFdata['_cell_length_b']))
+    obj.c = float(error_strip(CIFdata['_cell_length_c']))
 
-            counter += 1
-            while not CIF[counter].startswith('loop'):
-                line_list = CIF[counter].split(',')
+    obj.alpha = float(error_strip(CIFdata['_cell_angle_alpha']))
+    obj.beta = float(error_strip(CIFdata['_cell_angle_beta']))
+    obj.gamma = float(error_strip(CIFdata['_cell_angle_gamma']))
 
-                line_tup = tuple(map(lambda coord: coord.replace('"', '').replace("'", "").replace('\n', ''), line_list))
+    sg_info = CIFdata['_symmetry_space_group_name_H-M'].replace(' ', '')
+    if ':' in sg_info:
+        sg_split = sg_info.split(':')
+        obj.spacegroup, obj.setting = sg_split[0], sg_split[1]
+    else:
+        obj.spacegroup = sg_info
 
-                obj.add_sym(tuple(line_tup))  # we add the data
-                counter += 1
-                obj.nsym = counter - counter_0 - 1
+    # For the number of the space group
+    if hasattr(obj, '_space_group_IT_number'):
+        obj.sgnumber = int(CIF['_space_group_IT_number'])
+    else: # retrieve number from space group symbol
+        obj.sgnumber = int((pyxtal.symmetry.Group(obj.spacegroup)).number)
 
-            counter = counter_0  # we restore counter's value
-            continue
+    # Check if hexagonal space group - for Miller-Bravais notation
+    obj.hex = obj.check_hex()
 
-        elif line.startswith('_atom_site_label'):
-            while CIF[counter].startswith('_') or CIF[counter].startswith('loop'):
-                counter += 1
+    if '_space_group_symop_operation_xyz' in CIFdata.keys():
+        operation_list = CIFdata['_space_group_symop_operation_xyz']
+    elif '_symmetry_equiv_pos_as_xyz' in CIFdata.keys():
+        operation_list = CIFdata['_symmetry_equiv_pos_as_xyz']
+    else:
+        raise Exception('No symmetry operations in .cif file')
 
-            atomic_counter = 1  # for types of atoms
-            while counter < len(CIF) and CIF[counter][0].isalpha() and 'loop' not in CIF[counter]:
+    obj.operation_list = [item.split(',') for item in operation_list]
 
-                line_list = CIF[counter].split(' ')
-                line_list = list(filter(lambda item: item.replace('\n', ''), line_list))
+    # Atomic positions:
+    atom_list = CIFdata['_atom_site_label']
+    x_list = [error_strip(x) for x in CIFdata['_atom_site_fract_x']]
+    y_list = [error_strip(y) for y in CIFdata['_atom_site_fract_y']]
+    z_list = [error_strip(z) for z in CIFdata['_atom_site_fract_z']]
+
+    if '_atom_site_occupancy' not in CIFdata.keys():
+        occ_list = np.ones(len(x_list))
+    else:
+        occ_list = [error_strip(occ)
+                    for occ in CIFdata['_atom_site_occupancy']]
+
+    for index in range(len(x_list)):
+        obj.add((atom_list[index], x_list[index], y_list[index],
+                 z_list[index], str(occ_list[index])))
 
 
-                line_list = [str(element).replace('\n', '')
-                             for element in line_list]
-
-                if len(line_list) <= 5: # if no occupation data
-                    occ_value = '1.0000'
-                else:
-                    occ_value = line_list[5]
-
-                obj.add((line_list[0], line_list[1],
-                         line_list[2], line_list[3], occ_value))
-                counter += 1
-                atomic_counter += 1
-            obj.n = atomic_counter - 1  # number of atoms
-        counter += 1
+    obj.n = len(atom_list)
+    obj.nsym = len(obj.operation_list)
     return
 
 
@@ -440,7 +467,14 @@ def fun_fetch_reflections(obj):
 
     global crystal
     crystal.reflections = hkl_and_Int
-    return hkl_and_Int
+
+    # We define display reflections, adding "i" if hexagonal:
+    if crystal.hex == False:
+        crystal.reflections_dis = crystal.reflections
+    else:
+        crystal.reflections_dis = [[((hkl[0], hkl[1], - hkl[0] - hkl[1], hkl[2])), I]
+                                   for hkl, I in hkl_and_Int]
+    return crystal.reflections_dis
 
 
 def fun_fetch_sensitivity(obj):
@@ -486,4 +520,4 @@ if __name__ == '__main__':  # only executes the below code if  main
     try:
         sys.exit(app.exec())  # execution
     except BaseException:
-        print('Exit')
+        print('Thanks for using inserexs.')
