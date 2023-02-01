@@ -1,5 +1,5 @@
 """
-BSD 3-Clause License
+BSD 3-Clause License.
 
 Copyright (c) 2022 CNRS - Université de Strasbourg.
 All rights reserved.
@@ -48,6 +48,7 @@ import math
 from math import cos, sin
 from sympy import Symbol, sympify  # v1.10.11
 
+import sensitivity_module as sm
 
 def Fhkl(h_c, k_c, l_c, t1, t2, t3):
     """Mathematically treats the structure factor."""
@@ -70,16 +71,32 @@ def unit_cell(a):
 def intensity_calculation(crystal):
     """Generate the intensity."""
     # Calculation of common values
-    energy = 40000  # charges energy for a first test
+
+    chosen_atoms = [crystal.atom_list[i][0][:2]
+                    for i in crystal.edge_checked_list]
+    if len(chosen_atoms) == 0:
+        energy = 1e4  # charges energy for a first test
+    else: # if indicated, it retrieves info
+        energy = sm.dic_atomic_numbers[chosen_atoms[0][:2]][2]
+
     lamda = 1.23984198e4/energy  # lambda in angstroms
     crystal.lattice_dimensions = triclinic_generator(crystal)
 
     # generate all hkl
-    raw_hkl_list = hkl_generator(crystal.maxhkl)  # list of reflections
-    raw_angle_list = [angle_get(reflection, crystal.lattice_dimensions, lamda)
-                      for reflection in raw_hkl_list]  # list of angles
+    raw_raw_hkl_list = hkl_generator(crystal.maxhkl)  # list of reflections
 
-    hkl_list, angle_list = correct_multiplicity(raw_hkl_list, raw_angle_list)
+    raw_angle_list = []
+    raw_hkl_list = []
+
+    for reflection in raw_raw_hkl_list:
+        try:
+            raw_angle_list.append(angle_get(reflection, crystal.lattice_dimensions, lamda))
+            raw_hkl_list.append(reflection)
+        except ValueError:
+            print(str(reflection) + ' reflection not allowed at chosen energy.')
+            pass
+
+    hkl_list, angle_list = correct_multiplicity(crystal, raw_hkl_list, raw_angle_list)
     # make dictionary hkl - angle, and take away multiplicites
 
     i_atom = 0  # It must starts with first atom type, then go on
@@ -90,12 +107,11 @@ def intensity_calculation(crystal):
     for i_atom in range(crystal.n):
         if crystal.forbidden:  # if forbidden reflections considered
             symbol = crystal.atom_list[i_atom][0]
-            print(symbol)
             symbol = ''.join(x for x in symbol if x.isalpha())
             ASF_list = [ASF_get(symbol, angle_list[i])
                         for i in range(len(hkl_list))]
         else:  # we just consider the atomic numbers
-            ASF = Atomic_number(crystal.atom_list[i_atom][0])
+            ASF = Atomic_number(crystal.atom_list[i_atom][0][:2])
             ASF_list = [[ASF, 0, 0] for i in range(len(hkl_list))]
 
         base_pos = (crystal.atom_list[i_atom][1],
@@ -132,7 +148,7 @@ def intensity_calculation(crystal):
     # We delete reflections under 1% of relative intensity
     final_hkl_and_Int = [(hkl_list[i], round(intensity_list[i]/max_I, 1))
                          for i in range(len(hkl_list))
-                         if intensity_list[i]/max_I >= 1]
+                         if intensity_list[i]/max_I >= 0.1]
     return final_hkl_and_Int
 
 
@@ -143,11 +159,11 @@ def list_unique_positions(crystal, pos_tuple):
     x, y, z = Symbol('x'), Symbol('y'), Symbol('z')
 
     X = [sympify(crystal.operation_list[i][0]).subs(x, pos_tuple[0]).subs(y, pos_tuple[1]).subs(z, pos_tuple[2])
-         for i in range(0, crystal.nsym)]
+         for i in range(crystal.nsym)]
     Y = [sympify(crystal.operation_list[i][1]).subs(x, pos_tuple[0]).subs(y, pos_tuple[1]).subs(z, pos_tuple[2])
-         for i in range(0, crystal.nsym)]
+         for i in range(crystal.nsym)]
     Z = [sympify(crystal.operation_list[i][2]).subs(x, pos_tuple[0]).subs(y, pos_tuple[1]).subs(z, pos_tuple[2])
-         for i in range(0, crystal.nsym)]
+         for i in range(crystal.nsym)]
 
     position_list = [(unit_cell(X[i]), unit_cell(Y[i]), unit_cell(Z[i]))
                      for i in range(len(X))]
@@ -241,7 +257,7 @@ def triclinic_generator(obj):
     return geo_matrix
 
 
-def correct_multiplicity(hkl, angles):
+def correct_multiplicity(crystal, hkl, angles):
     """Correct multiplicity for samples with multiplicities."""
     hkl_correct, angles_correct = [], []
     # list of all reflections
@@ -254,6 +270,7 @@ def correct_multiplicity(hkl, angles):
     # corrects all into positive h, k, l
     hkl_correct = [(abs(reflection[0]), abs(reflection[1]), abs(reflection[2]))
                    for reflection in hkl_correct]
+
     return hkl_correct, angles_correct
 
 
